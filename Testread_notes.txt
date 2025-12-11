@@ -1,0 +1,9 @@
+Project: New client onboarding platform
+Date: 10 Dec
+
+- We’re still waiting on the security team to confirm the data retention policy.
+- Integration with the legacy CRM might be delayed because their team is short-staffed.
+- Assumption: clients will upload documents via the new portal instead of email.
+- If compliance change the KYC rules again, we may need to rework the form fields.
+- Dependency on the external vendor for address verification API.
+- Issue: current manual process is causing duplicate records and delays.s
