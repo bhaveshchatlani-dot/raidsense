@@ -1,0 +1,36 @@
+{
+  "risks": [
+    {
+      "title": "Delay in integration with legacy CRM",
+      "detail": "Integration might be delayed because their team is short-staffed.",
+      "mitigation": "Monitor staffing levels and explore additional resources if necessary."
+    },
+    {
+      "title": "Potential rework due to compliance changes",
+      "detail": "If compliance changes the KYC rules again, the form fields may need to be reworked.",
+      "mitigation": "Stay updated on compliance changes and prepare for necessary adjustments."
+    }
+  ],
+  "assumptions": [
+    {
+      "title": "Document upload method",
+      "detail": "Clients will upload documents via the new portal instead of email.",
+      "validation_step": ""
+    }
+  ],
+  "issues": [
+    {
+      "title": "Duplicate records and delays",
+      "detail": "Current manual process is causing duplicate records and delays.",
+      "next_step": "Investigate automation solutions to reduce manual errors."
+    }
+  ],
+  "dependencies": [
+    {
+      "title": "External vendor for address verification",
+      "detail": "Dependency on the external vendor for address verification API.",
+      "owner": "",
+      "due_date": ""
+    }
+  ]
+}
