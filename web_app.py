@@ -1,13 +1,15 @@
-from flask import Flask, request, render_template_string, send_file
-from pathlib import Path
+from flask import Flask, request, render_template_string, send_file, session
 import json
 import time
 import os
+import uuid
+from collections import defaultdict, deque
 
 # Reuse your existing functions from app.py
 from app import analyse_notes_with_openai, render_markdown
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
 
 HTML = """
 <!doctype html>
@@ -40,6 +42,9 @@ HTML = """
   <p><a href="/history">View history</a></p>
 
 <form method="post" action="/generate" enctype="multipart/form-data">
+<p class="muted" style="margin-top:14px;">Password</p>
+<input type="password" name="pw" placeholder="Enter app password" />
+
   <p class="muted">Option A: Upload a .txt file</p>
   <input type="file" name="notes_file" accept=".txt" />
 
@@ -133,6 +138,49 @@ HTML = """
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# ---- Safety / abuse controls ----
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
+MAX_NOTES_CHARS = int(os.environ.get("MAX_NOTES_CHARS", "20000"))
+RATE_LIMIT_PER_MIN = int(os.environ.get("RATE_LIMIT_PER_MIN", "10"))
+
+# In-memory rate limit: {ip: timestamps}
+_hits = defaultdict(lambda: deque(maxlen=RATE_LIMIT_PER_MIN))
+
+def client_ip() -> str:
+    # Render uses a proxy; X-Forwarded-For may exist
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+def check_rate_limit() -> bool:
+    now = time.time()
+    ip = client_ip()
+    q = _hits[ip]
+    # Drop anything older than 60s
+    while q and now - q[0] > 60:
+        q.popleft()
+    if len(q) >= RATE_LIMIT_PER_MIN:
+        return False
+    q.append(now)
+    return True
+
+def require_password_or_403():
+    if not APP_PASSWORD:
+        return None  # password gate disabled
+
+    # If already authed in this browser session, allow
+    if session.get("authed") is True:
+        return None
+
+    # Otherwise check pw from form (POST) or query param (GET)
+    pw = request.form.get("pw") or request.args.get("pw") or ""
+    if pw == APP_PASSWORD:
+        session["authed"] = True
+        return None
+
+    return "Forbidden", 403
+
 def list_runs():
     files = sorted(OUTPUT_DIR.glob("*_RAID.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     runs = []
@@ -147,11 +195,24 @@ def save_outputs(run_id: str, raid_data: dict, raid_md: str, notes: str):
     (OUTPUT_DIR / f"{run_id}_notes.txt").write_text(notes, encoding="utf-8")
 
 @app.get("/")
+@app.get("/")
 def home():
     return render_template_string(HTML, notes="", raid=None, raid_md="", run_id="")
 
+
 @app.post("/generate")
 def generate():
+    # Password gate
+    auth = require_password_or_403()
+    if auth:
+        return auth
+
+    # Rate limit
+    if not check_rate_limit():
+        return render_template_string(
+            HTML, notes="", raid=None, raid_md="Too many requests — try again in a minute.", run_id=""
+        )
+
     notes = ""
 
     # 1) Try file upload first
@@ -168,7 +229,7 @@ def generate():
                 run_id="",
             )
 
-    # 2) If no file (or empty), fall back to pasted text
+    # 2) Fall back to pasted text
     if not notes:
         notes = request.form.get("notes", "").strip()
 
@@ -177,16 +238,36 @@ def generate():
             HTML, notes="", raid=None, raid_md="Please upload a .txt file or paste some notes.", run_id=""
         )
 
-    raid_data = analyse_notes_with_openai(notes)
+    # Length limit (cost control)
+    if len(notes) > MAX_NOTES_CHARS:
+        return render_template_string(
+            HTML,
+            notes=notes[:MAX_NOTES_CHARS],
+            raid=None,
+            raid_md=f"Notes too long. Max is {MAX_NOTES_CHARS} characters.",
+            run_id="",
+        )
+
+    # Call OpenAI safely
+    try:
+        raid_data = analyse_notes_with_openai(notes)
+    except Exception as e:
+        return render_template_string(
+            HTML, notes=notes, raid=None, raid_md=f"Error calling OpenAI: {e}", run_id=""
+        )
+
     raid_md = render_markdown(raid_data)
 
-    run_id = str(int(time.time()))
+    run_id = uuid.uuid4().hex
     save_outputs(run_id, raid_data, raid_md, notes)
 
     return render_template_string(HTML, notes=notes, raid=raid_data, raid_md=raid_md, run_id=run_id)
 
 @app.get("/download/<fmt>/<run_id>")
 def download(fmt, run_id):
+    auth = require_password_or_403()
+    if auth:
+        return auth
     if fmt not in ("md", "json"):
         return "Invalid format", 400
 
@@ -198,7 +279,12 @@ def download(fmt, run_id):
 
 @app.get("/history")
 def history():
+    auth = require_password_or_403()
+    if auth:
+        return auth
+
     runs = list_runs()
+    ...
     items = "".join([f"<li><a href='/run/{rid}'>{rid}</a></li>" for rid in runs]) or "<li>No runs yet.</li>"
     return f"""
     <h1>RAIDSense History</h1>
@@ -208,6 +294,11 @@ def history():
 
 @app.get("/run/<run_id>")
 def view_run(run_id):
+    auth = require_password_or_403()
+    if auth:
+        return auth
+
+    
     json_path = OUTPUT_DIR / f"{run_id}_RAID.json"
     md_path = OUTPUT_DIR / f"{run_id}_RAID.md"
     notes_path = OUTPUT_DIR / f"{run_id}_notes.txt"
@@ -222,5 +313,4 @@ def view_run(run_id):
     return render_template_string(HTML, notes=notes, raid=raid_data, raid_md=raid_md, run_id=run_id)
 
 if __name__ == "__main__":
-   if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
